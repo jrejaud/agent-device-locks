@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# screen-claim — an AI agent asks for this Mac's screen, shows a visible overlay while it
+# drives, and gives the human Pause / Resume / Talk / Cancel buttons that actually stop it.
+#
+#   screen-claim start "<goal>" [--consent N]   countdown (default 15s) → overlay; exit 3 if denied
+#   screen-claim doing "<text>"                 update the overlay's status line
+#   screen-claim stop                           take the overlay down, release the screen
+#   screen-claim status                         holder, goal, paused/cancelled, unread messages
+#   screen-claim stopped                        exit 0 if the user has paused/cancelled/denied
+#   screen-claim inbox                          print (and clear) messages sent via Talk
+#   screen-claim resume                         clear a Pause — only when the user says so
+#
+# Order: `start` before the first click, drive (peekaboo/cliclick/AppleScript), `stop` after —
+# including on failure. While paused, hooks/screen-stop-gate.sh denies every driving call.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
+STATE="${SCREEN_CLAIM_STATE:-$HOME/.local/state/screen-claim}"
+LOCK="$STATE/lock.json"; INTR="$STATE/interrupt.json"; INBOX="$STATE/inbox.jsonl"
+DECISION="$STATE/decision"; DOING="$STATE/doing"; PIDF="$STATE/watch.pid"; LOGF="$STATE/watch.log"
+mkdir -p "$STATE"
+
+CMD="${1:-}"; [ $# -gt 0 ] && shift
+GOAL=""; CONSENT="${SCREEN_CONSENT_SECS:-15}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --consent) CONSENT="${2:-15}"; shift 2 ;;
+    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) [ -z "$GOAL" ] && GOAL="$1"; shift ;;
+  esac
+done
+
+watcher_alive() { [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null; }
+
+stop_watcher() {
+  [ -f "$PIDF" ] || return 0
+  local p; p="$(cat "$PIDF" 2>/dev/null)"
+  [ -n "$p" ] && kill -TERM "$p" 2>/dev/null
+  for _ in 1 2 3 4 5 6; do kill -0 "$p" 2>/dev/null || break; sleep 0.3; done
+  kill -9 "$p" 2>/dev/null || true
+  rm -f "$PIDF"
+}
+
+holder() { jq -r '"\(.who) — \(.goal) (since \(.started))"' "$LOCK" 2>/dev/null; }
+
+case "$CMD" in
+  start)
+    [ -n "$GOAL" ] || { echo "screen-claim: a goal is required — it is what the user reads before deciding to stop you" >&2; exit 2; }
+    if [ -f "$INTR" ]; then
+      echo "screen-claim: REFUSED — the user $(jq -r .kind "$INTR") screen control: $(jq -r .message "$INTR"). Do not drive the screen; only the user resumes." >&2
+      exit 3
+    fi
+    if [ -f "$LOCK" ] && watcher_alive; then
+      echo "screen-claim: the screen is already held: $(holder)" >&2; exit 4
+    fi
+    stop_watcher
+    rm -f "$DECISION" "$INBOX"; printf '%s\n' "$GOAL" > "$DOING"
+    who="${SCREEN_CLAIM_WHO:-${CLAUDE_CODE_SESSION_ID:+session ${CLAUDE_CODE_SESSION_ID:0:8} · }$(hostname -s)}"
+    jq -n --arg who "$who" --arg goal "$GOAL" --arg started "$(date -u +%FT%TZ)" \
+      --arg session "${CLAUDE_CODE_SESSION_ID:-}" \
+      '{who:$who, goal:$goal, started:$started, session:$session}' > "$LOCK"
+    nohup node "$HERE/watch.mjs" --state "$STATE" --label "$who" --desc "$GOAL" --consent "$CONSENT" >"$LOGF" 2>&1 &
+    echo $! > "$PIDF"
+    deadline=$(( $(date +%s) + CONSENT + 15 ))
+    while [ ! -s "$DECISION" ] && [ "$(date +%s)" -lt "$deadline" ]; do sleep 0.3; done
+    d="$(cat "$DECISION" 2>/dev/null)"
+    if [ "$d" = "grant" ]; then echo "screen-claim: control granted — overlay up (\"$GOAL\")"; exit 0; fi
+    stop_watcher; rm -f "$LOCK"
+    if [ "$d" = "deny" ]; then echo "screen-claim: DENIED — the user clicked \"I'm busy\". Not driving." >&2; exit 3; fi
+    echo "screen-claim: the overlay never reported a decision (see $LOGF) — not driving" >&2; exit 5
+    ;;
+
+  doing)
+    [ -n "$GOAL" ] || { echo "usage: screen-claim doing \"<text>\"" >&2; exit 2; }
+    printf '%s\n' "$GOAL" > "$DOING"; echo "screen-claim: status → $GOAL"
+    ;;
+
+  stop)
+    rm -f "$LOCK"; stop_watcher
+    # A Cancel or a denial is spent once the agent has released the screen; a Pause is not
+    # (the user resumes it), but `stop` ends the claim, so nothing is left to resume.
+    rm -f "$DECISION" "$INTR"
+    echo "screen-claim: overlay down, screen released"
+    ;;
+
+  resume|clear-stop)
+    rm -f "$INTR"; echo "screen-claim: resumed — screen driving allowed again"
+    ;;
+
+  stopped)
+    if [ -f "$INTR" ]; then echo "STOPPED ($(jq -r .kind "$INTR")): $(jq -r .message "$INTR")"; exit 0; fi
+    echo "not stopped"; exit 1
+    ;;
+
+  inbox)
+    [ -s "$INBOX" ] || { echo "(no messages)"; exit 0; }
+    jq -r '"[\(.at)] \(.text)"' "$INBOX"; : > "$INBOX"
+    ;;
+
+  status)
+    if [ -f "$LOCK" ] && watcher_alive; then echo "held: $(holder)"; else echo "free"; fi
+    [ -f "$INTR" ] && echo "$(jq -r .kind "$INTR"): $(jq -r .message "$INTR")"
+    [ -s "$INBOX" ] && echo "unread messages: $(wc -l < "$INBOX" | tr -d ' ') (screen-claim inbox)"
+    exit 0
+    ;;
+
+  ""|help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  *) echo "screen-claim: unknown subcommand: $CMD" >&2; exit 2 ;;
+esac
