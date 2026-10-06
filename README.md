@@ -37,7 +37,7 @@ Needs macOS 14+, Xcode command-line tools, Node 18+, `jq`, and peekaboo
 (`brew install openclaw/tap/peekaboo`) with Accessibility + Screen Recording granted.
 
 ```bash
-git clone https://github.com/jrejaud/screen-claim ~/screen-claim
+git clone https://github.com/jrejaud/agent-device-locks ~/screen-claim
 ~/screen-claim/overlay/build.sh
 ln -s ~/screen-claim/bin/screen-claim /usr/local/bin/screen-claim
 ```
