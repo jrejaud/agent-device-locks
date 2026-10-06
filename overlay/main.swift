@@ -5,6 +5,7 @@
 // it grabbed focus and sat over the middle of the screen, covering what was being driven).
 //
 //   agent-overlay-mac --who "<session · host>" --desc "<what it is doing>" [--consent 15] [--go 1]
+//                     [--width 400] [--text-scale 1]   panel width (pt) and text size multiplier
 //
 // Phase 1 (if --consent > 0): consent countdown — "Taking control in Ns…" with a shrinking
 //   bar and an "I'm busy — don't control" button. Deny → prints DENY, shows "Denied", exits 1.
@@ -16,6 +17,7 @@
 //   stdout:  GRANT <ts> | DENY <ts> | STOP <ts> | RESUME <ts> | CANCEL <ts> | MSG <text> | FOCUS <ts>
 //   stdin:   DOING <text>   update the status line
 //            PAUSED | RESUMED   reflect a pause/resume that came from elsewhere
+//            TALK [text]    open the Talk box (paused), optionally prefilled; for demos and tests
 //            HIDE           close and exit 0
 import AppKit
 
@@ -30,6 +32,8 @@ let who = arg("who", "an agent")
 var desc = arg("desc", "working")
 let consentSecs = Double(arg("consent", "0")) ?? 0
 let showGo = arg("go", "0") == "1"   // "Go to session" button, only when the watcher can focus the agent
+let W = CGFloat(Double(arg("width", "400")) ?? 400)          // panel width in points
+let TS = CGFloat(Double(arg("text-scale", "1")) ?? 1)      // text size multiplier (accessibility, screenshots for small screens)
 func now() -> String { String(Int(Date().timeIntervalSince1970 * 1000)) }
 func emit(_ s: String) { print(s); fflush(stdout) }
 
@@ -62,7 +66,7 @@ final class Overlay: NSObject, NSTextFieldDelegate {
     var timer: Timer?
 
     override init() {
-        panel = Panel(contentRect: NSRect(x: 0, y: 0, width: 400, height: 10),
+        panel = Panel(contentRect: NSRect(x: 0, y: 0, width: W, height: 10),
                       styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView, .utilityWindow],
                       backing: .buffered, defer: false)
         super.init()
@@ -93,23 +97,24 @@ final class Overlay: NSObject, NSTextFieldDelegate {
             stack.trailingAnchor.constraint(equalTo: fx.trailingAnchor),
             stack.topAnchor.constraint(equalTo: fx.topAnchor),
             stack.bottomAnchor.constraint(equalTo: fx.bottomAnchor),
-            fx.widthAnchor.constraint(equalToConstant: 400),
+            fx.widthAnchor.constraint(equalToConstant: W),
         ])
 
-        title.font = .boldSystemFont(ofSize: 14)
-        whoLabel.font = .systemFont(ofSize: 11)
+        title.font = .boldSystemFont(ofSize: 14 * TS)
+        for l in [title, countdown] { l.lineBreakMode = .byWordWrapping; l.maximumNumberOfLines = 0; l.preferredMaxLayoutWidth = W - 32 }
+        whoLabel.font = .systemFont(ofSize: 11 * TS)
         whoLabel.textColor = .secondaryLabelColor
-        descLabel.font = .systemFont(ofSize: 13)
-        descLabel.preferredMaxLayoutWidth = 368
-        countdown.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        descLabel.font = .systemFont(ofSize: 13 * TS)
+        descLabel.preferredMaxLayoutWidth = W - 32
+        countdown.font = .monospacedDigitSystemFont(ofSize: 12 * TS, weight: .regular)
         bar.isIndeterminate = false
         bar.minValue = 0; bar.maxValue = 1000
-        bar.widthAnchor.constraint(equalToConstant: 368).isActive = true
+        bar.widthAnchor.constraint(equalToConstant: W - 32).isActive = true
 
         for (b, sel) in [(pauseBtn, #selector(onPause)), (talkBtn, #selector(onTalk)),
                          (cancelBtn, #selector(onCancel)), (goBtn, #selector(onGo)), (minBtn, #selector(onMin)),
                          (denyBtn, #selector(onDeny))] {
-            b.target = self; b.action = sel; b.bezelStyle = .rounded
+            b.target = self; b.action = sel; b.bezelStyle = .rounded; b.font = .systemFont(ofSize: 13 * TS)
         }
         pauseBtn.keyEquivalent = ""
         pauseBtn.bezelColor = .controlAccentColor
@@ -120,9 +125,11 @@ final class Overlay: NSObject, NSTextFieldDelegate {
 
         talkField.placeholderString = "Tell the agent what to do"
         talkField.delegate = self
-        talkField.widthAnchor.constraint(equalToConstant: 290).isActive = true
+        talkField.widthAnchor.constraint(equalToConstant: W - 110 * TS).isActive = true
         let send = NSButton(title: "Send", target: self, action: #selector(onSend))
         send.bezelStyle = .rounded
+        send.font = .systemFont(ofSize: 13 * TS)
+        talkField.font = .systemFont(ofSize: 13 * TS)
         talkRow.orientation = .horizontal
         talkRow.addArrangedSubview(talkField)
         talkRow.addArrangedSubview(send)
@@ -139,7 +146,7 @@ final class Overlay: NSObject, NSTextFieldDelegate {
         stack.arrangedSubviews.forEach { stack.removeArrangedSubview($0); $0.removeFromSuperview() }
         views.forEach { stack.addArrangedSubview($0) }
         panel.contentView?.layoutSubtreeIfNeeded()
-        let size = panel.contentView?.fittingSize ?? NSSize(width: 400, height: 160)
+        let size = panel.contentView?.fittingSize ?? NSSize(width: W, height: 160)
         var f = panel.frame
         let top = f.maxY
         f.size = size
@@ -252,6 +259,7 @@ final class Overlay: NSObject, NSTextFieldDelegate {
                     if s.hasPrefix("DOING ") { desc = String(s.dropFirst(6)); if self.decided && !self.paused { self.showBanner() } }
                     else if s == "PAUSED" { self.setPaused(true) }
                     else if s == "RESUMED" { self.setPaused(false) }
+                    else if s.hasPrefix("TALK") { self.paused = true; self.talkRow.isHidden = false; self.talkField.stringValue = String(s.dropFirst(5)); self.showBanner() }
                     else if s == "HIDE" { exit(0) }
                 }
             }

@@ -22,13 +22,14 @@ keystrokes out of the wrong app.
 
 | Path | |
 |---|---|
-| `overlay/main.swift` | The panel. A non-activating `NSPanel` (never steals focus, floats over every Space). Speaks a line protocol: prints `GRANT` `DENY` `STOP` `RESUME` `CANCEL` `MSG <text>`, reads `DOING <text>` `PAUSED` `RESUMED` `HIDE`. |
+| `overlay/main.swift` | The panel. A non-activating `NSPanel` (never steals focus, floats over every Space). Speaks a line protocol: prints `GRANT` `DENY` `STOP` `RESUME` `CANCEL` `MSG <text>`, reads `DOING <text>` `PAUSED` `RESUMED` `TALK [text]` `HIDE`. Options: `--width <pt>` and `--text-scale <x>` for small screens. |
 | `bin/screen-claim` | What the agent runs: `start "<goal>"`, `doing`, `stop`, `status`, `stopped`, `inbox`, `resume`. |
 | `bin/watch.mjs` | Runs the panel for one claim and turns presses into state: `interrupt.json` on Pause/Cancel (plus `pkill` of peekaboo/cliclick), `inbox.jsonl` for Talk. Renews the claim's lock and keeps the Mac awake while the claim is held. |
 | `bin/agent-lock.mjs` | A per-device lock any agent can take: TTL, wait queue, interrupt flag, master switch, optionally stored on an adb device. The Mac's claim is its `mac-screen` resource. See [One lock per device](#one-lock-per-device). |
 | `hooks/screen-stop-gate.sh` | PreToolUse hook: while paused or cancelled, deny every screen-driving call. The deny reason carries the user's Talk messages, so the agent hears them on its next attempt. |
 | `hooks/screen-lock-gate.sh` | PreToolUse hook: deny screen driving unless this session holds the `mac-screen` lock. One driver at a time, never one the user can't see. |
 | `tools/type-to-pid.swift` | Send keystrokes to one process by pid, so they cannot land in whatever happens to have focus. |
+| `tools/capture-panels.sh` | Screenshots the real panel in every state, by window id (desktop size, or `320 1.3 -mobile` for phones). |
 | `PLAYBOOK.md` | The rules for the agent. |
 
 ## Install
