@@ -24,9 +24,10 @@ keystrokes out of the wrong app.
 |---|---|
 | `overlay/main.swift` | The panel. A non-activating `NSPanel` (never steals focus, floats over every Space). Speaks a line protocol: prints `GRANT` `DENY` `STOP` `RESUME` `CANCEL` `MSG <text>`, reads `DOING <text>` `PAUSED` `RESUMED` `HIDE`. |
 | `bin/screen-claim` | What the agent runs: `start "<goal>"`, `doing`, `stop`, `status`, `stopped`, `inbox`, `resume`. |
-| `bin/watch.mjs` | Runs the panel for one claim and turns presses into state: `interrupt.json` on Pause/Cancel (plus `pkill` of peekaboo/cliclick), `inbox.jsonl` for Talk. Keeps the Mac awake while the claim is held. |
+| `bin/watch.mjs` | Runs the panel for one claim and turns presses into state: `interrupt.json` on Pause/Cancel (plus `pkill` of peekaboo/cliclick), `inbox.jsonl` for Talk. Renews the claim's lock and keeps the Mac awake while the claim is held. |
+| `bin/agent-lock.mjs` | A per-device lock any agent can take: TTL, wait queue, interrupt flag, master switch, optionally stored on an adb device. The Mac's claim is its `mac-screen` resource. See [One lock per device](#one-lock-per-device). |
 | `hooks/screen-stop-gate.sh` | PreToolUse hook: while paused or cancelled, deny every screen-driving call. The deny reason carries the user's Talk messages, so the agent hears them on its next attempt. |
-| `hooks/screen-lock-gate.sh` | PreToolUse hook: deny screen driving unless this session holds the claim. One driver at a time, never one the user can't see. |
+| `hooks/screen-lock-gate.sh` | PreToolUse hook: deny screen driving unless this session holds the `mac-screen` lock. One driver at a time, never one the user can't see. |
 | `tools/type-to-pid.swift` | Send keystrokes to one process by pid, so they cannot land in whatever happens to have focus. |
 | `PLAYBOOK.md` | The rules for the agent. |
 
@@ -69,11 +70,57 @@ Then add [PLAYBOOK.md](PLAYBOOK.md) to your agent's instructions.
 - `SCREEN_CONSENT_SECS` (default 15), `SCREEN_CLAIM_WHO` (the label on the panel),
   `SCREEN_CLAIM_STATE` (default `~/.local/state/screen-claim`).
 
+
+## One lock per device
+
+Whatever an agent drives — this Mac's screen, a phone, a tablet, a headset — only one
+agent should drive it at a time. `bin/agent-lock.mjs` is that lock, generic over a
+resource name. It needs only Node.
+
+- **TTL.** A lock lapses unless renewed, so a crashed agent cannot wedge a device. A
+  *live* lock is never taken away: `steal` only adopts a lock whose holder stopped renewing.
+- **Queue.** `acquire --wait N` waits in line; waiters are served in arrival order (or the
+  order set with `reorder`), and a waiter that stops heartbeating drops out.
+- **Interrupt.** Anyone can raise a stop flag on a resource (`interrupt`) without holding
+  it; the holder sees it in `status --json` and stops. `resume` clears it.
+- **Master switch.** `disable` makes every `acquire` refuse until `enable`.
+- **On the device.** With `--device <serial>` the lock lives on the device itself
+  (`/data/local/tmp/agent-locks`, over `adb`), so agents on different machines that reach
+  the same phone see the same lock.
+
+Holder identity is `$AGENT_LOCK_HOLDER`, else `<CLAUDE_CODE_SESSION_ID>@<hostname>`, else
+`pid<n>@<hostname>` (one-shot: set one of the first two for anything longer than a call).
+Local locks live under `$AGENT_LOCK_DIR` (default `~/.local/state/agent-locks`).
+
+Wrap your own driving commands with it, e.g. an Android phone over adb:
+
+```bash
+L=~/screen-claim/bin/agent-lock.mjs; DEV=R5CW1234567     # adb devices
+node $L acquire phone --device $DEV --ttl 300 --wait 600 --desc "Installing the beta build" || exit 1
+trap 'node $L release phone --device $DEV' EXIT
+adb -s $DEV install -r app-beta.apk
+adb -s $DEV shell am start -n com.example/.MainActivity
+node $L status phone --device $DEV --json | jq -e '.interrupted | not' >/dev/null || exit 0   # the user said stop
+node $L renew phone --device $DEV --ttl 300                                                    # long job: keep it
+```
+
+Exit codes: `0` ok, `4` still held by someone else after `--wait`, `5` not yours (or a
+live lock you tried to steal), `6` disabled. `queue --json` shows the holder and the line.
+
+**The Mac uses the same lock.** `screen-claim start` takes the `mac-screen` agent-lock
+(exit `4` if another agent holds it; `--wait N` to queue), its watcher renews it while the
+overlay is up (`SCREEN_CLAIM_TTL`, default 60 s), and `stop` releases it. The lock hook asks
+`agent-lock status mac-screen` whether the calling session is the holder. So
+`node bin/agent-lock.mjs queue mac-screen` shows who is driving the Mac, and
+`disable mac-screen` keeps every agent off it. Pause / Cancel / Talk stay overlay state in
+`$SCREEN_CLAIM_STATE` and reach the agent through the stop hook's deny reason.
+
 ## Tests
 
 ```bash
-test/hooks.test.sh   # both hooks, against a throwaway state dir
-test/e2e.test.sh     # start → pause → talk → resume → cancel → stop, with a fake overlay
+test/agent-lock.test.sh  # the lock: refuse, queue order, steal, interrupt, disable (local storage)
+test/hooks.test.sh       # both hooks, against a throwaway state dir
+test/e2e.test.sh         # start → pause → talk → resume → cancel → stop, with a fake overlay
 ```
 
 MIT.

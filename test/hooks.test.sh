@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Contract for both hooks, against a throwaway state dir. Prints PASS/FAIL per case.
+# Contract for both hooks, against a throwaway state dir and lock root. Prints PASS/FAIL per case.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export SCREEN_CLAIM_STATE="$(mktemp -d)"
-trap 'kill "$SLEEPER" 2>/dev/null; rm -rf "$SCREEN_CLAIM_STATE"' EXIT
+export AGENT_LOCK_DIR="$SCREEN_CLAIM_STATE/locks"
+unset AGENT_LOCK_HOLDER CLAUDE_CODE_SESSION_ID
+trap 'rm -rf "$SCREEN_CLAIM_STATE"' EXIT
 fails=0
 
 call() {  # hook, command, session → "deny" | "allow"
@@ -14,6 +16,7 @@ call() {  # hook, command, session → "deny" | "allow"
 expect() {  # label, expected, actual
   if [ "$2" = "$3" ]; then echo "PASS  $1"; else echo "FAIL  $1 (expected $2, got $3)"; fails=$((fails+1)); fi
 }
+lock() { CLAUDE_CODE_SESSION_ID="$1" node "$ROOT/bin/agent-lock.mjs" "${@:2}" >/dev/null 2>&1; }
 
 # --- lock gate: no claim held
 expect "lock: click without a claim is denied"        deny  "$(call screen-lock-gate.sh 'peekaboo click "OK"')"
@@ -21,12 +24,14 @@ expect "lock: screenshot without a claim is allowed"  allow "$(call screen-lock-
 expect "lock: quoted mention is not an invocation"    allow "$(call screen-lock-gate.sh "grep 'peekaboo click' notes.md")"
 expect "lock: System Events click is denied"          deny  "$(call screen-lock-gate.sh "osascript -e 'tell application \"System Events\" to click button 1'")"
 
-# --- lock gate: claim held by S1 (a live pid stands in for the watcher)
-sleep 300 & SLEEPER=$!
-echo "$SLEEPER" > "$SCREEN_CLAIM_STATE/watch.pid"
-jq -n '{who:"test",goal:"g",started:"now",session:"S1"}' > "$SCREEN_CLAIM_STATE/lock.json"
+# --- lock gate: the mac-screen agent-lock held by session S1
+lock S1 acquire mac-screen --ttl 60 --wait 0 --desc "g"
 expect "lock: holder may click"                       allow "$(call screen-lock-gate.sh 'peekaboo click "OK"' S1)"
 expect "lock: a different session may not"            deny  "$(call screen-lock-gate.sh 'peekaboo click "OK"' S2)"
+lock S1 release mac-screen
+expect "lock: after release the holder may not"       deny  "$(call screen-lock-gate.sh 'peekaboo click "OK"' S1)"
+lock S1 acquire mac-screen --ttl 1 --wait 0; sleep 2
+expect "lock: a stale claim (watcher died) is denied" deny  "$(call screen-lock-gate.sh 'peekaboo click "OK"' S1)"
 
 # --- stop gate
 expect "stop: not paused → allowed"                   allow "$(call screen-stop-gate.sh 'peekaboo click "OK"')"

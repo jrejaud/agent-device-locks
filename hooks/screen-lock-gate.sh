@@ -7,8 +7,7 @@
 # Read-only peekaboo verbs stay free: image, capture, see, list, permissions, learn, config.
 set -uo pipefail
 command -v jq >/dev/null 2>&1 || exit 0
-STATE="${SCREEN_CLAIM_STATE:-$HOME/.local/state/screen-claim}"
-LOCK="$STATE/lock.json"; PIDF="$STATE/watch.pid"
+HERE="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
 
 input="$(cat)"
 [ "$(printf '%s' "$input" | jq -r '.tool_name // ""')" = "Bash" ] || exit 0
@@ -29,14 +28,17 @@ if printf '%s' "$cmd" | grep -q osascript && printf '%s' "$raw" | grep -qi 'Syst
 fi
 [ -n "$drives" ] || exit 0
 
-held=0
-if [ -f "$LOCK" ] && [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; then
-  owner="$(jq -r '.session // ""' "$LOCK")"
-  if [ -z "$owner" ] || [ -z "$sid" ] || [ "$owner" = "$sid" ]; then held=1; fi
+# The claim is the agent-lock `mac-screen` (taken by `screen-claim start`, renewed by its
+# watcher, stale within a TTL if the watcher dies). Ask it whether THIS session holds it:
+# agent-lock names a Claude Code holder after its session id, so pass the hook's in.
+command -v node >/dev/null 2>&1 || exit 0
+st="$(CLAUDE_CODE_SESSION_ID="$sid" node "$HERE/../bin/agent-lock.mjs" status mac-screen --json 2>/dev/null)"
+state="$(printf '%s' "$st" | jq -r '.state // "free"' 2>/dev/null)"
+if [ "$state" = held ] || [ "$state" = held-by-me ]; then
+  if [ -z "$sid" ] || [ "$(printf '%s' "$st" | jq -r .mine)" = true ]; then exit 0; fi
+  why="another agent holds the screen: $(printf '%s' "$st" | jq -r '.holder + " — " + .desc')"
+else
+  why="you do not hold the screen claim"
 fi
-[ "$held" = 1 ] && exit 0
-
-why="you do not hold the screen claim"
-[ -f "$LOCK" ] && why="another agent holds the screen: $(jq -r '.who + " — " + .goal' "$LOCK")"
 jq -n --arg r "Blocked $drives: $why. Run \`screen-claim start \"<what you are about to do>\"\` first (it shows the user a countdown and a control overlay), and \`screen-claim stop\` when done." \
   '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'

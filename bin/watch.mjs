@@ -2,7 +2,10 @@
 // watch.mjs — runs the overlay for one screen claim and turns its button presses into
 // state the driving agent cannot miss. Started (detached) by `screen-claim start`.
 //
-//   watch.mjs --state <dir> --label "<who>" --desc "<goal>" [--consent 15]
+//   watch.mjs --state <dir> --label "<who>" --desc "<goal>" [--consent 15] [--ttl 60]
+//
+// The claim itself is the agent-lock `mac-screen`, taken by `screen-claim start` under the
+// same holder name this process inherits; the watcher renews it and exits when it is gone.
 //
 // What each button does:
 //   Pause   → interrupt.json {kind:"pause"} + kill any in-flight peekaboo/cliclick.
@@ -34,7 +37,8 @@ const NOTIFY = process.env.SCREEN_CLAIM_NOTIFY_CMD || '';
 const FOCUS = process.env.SCREEN_CLAIM_FOCUS_CMD || '';
 
 const f = (n) => path.join(STATE, n);
-const LOCK = f('lock.json'), INTR = f('interrupt.json'), INBOX = f('inbox.jsonl'),
+const ttl = parseInt(opt('ttl', '60'), 10);
+const INTR = f('interrupt.json'), INBOX = f('inbox.jsonl'),
       DECISION = f('decision'), DOING = f('doing');
 
 const log = (m) => console.log(`[screen-claim] ${new Date().toISOString()} ${m}`);
@@ -104,9 +108,15 @@ fs.watchFile(DOING, { interval: 700 }, () => {
 const awake = spawn('caffeinate', ['-d', '-i', '-w', String(process.pid)], { stdio: 'ignore' });
 const nudge = setInterval(() => run('caffeinate', ['-u', '-t', '2'], 5000), 30000);
 
-// Never outlive the claim: when lock.json disappears (screen-claim stop), close.
+// Never outlive the claim, and keep it alive while up: every 2 s read the `mac-screen`
+// agent-lock; once it is no longer ours (`screen-claim stop` released it), close. Renew at
+// half the TTL, so if this watcher dies the lock goes stale and the next agent can take it.
+const lockCli = (verb, ...a) => run(process.execPath, [path.join(here, 'agent-lock.mjs'), verb, 'mac-screen', ...a], 10000);
 const poll = setInterval(() => {
-  if (!fs.existsSync(LOCK)) { log('claim released — closing the overlay'); send('HIDE'); setTimeout(() => cleanup(0), 400); }
+  let s = null;
+  try { s = JSON.parse(lockCli('status', '--json') || 'null'); } catch {}
+  if (!s || !s.mine) { log('claim released — closing the overlay'); send('HIDE'); setTimeout(() => cleanup(0), 400); return; }
+  if (s.expires - s.now < ttl / 2) lockCli('renew', '--ttl', String(ttl));
 }, 2000);
 
 let done = false;
