@@ -3,3 +3,4 @@ overlay/agent-overlay-mac.new
 tools/type-to-pid
 .DS_Store
 tools/window-frames
+.playwright-cli/
