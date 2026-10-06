@@ -30,6 +30,7 @@ keystrokes out of the wrong app.
 | `hooks/screen-lock-gate.sh` | PreToolUse hook: deny screen driving unless this session holds the `mac-screen` lock. One driver at a time, never one the user can't see. |
 | `tools/type-to-pid.swift` | Send keystrokes to one process by pid, so they cannot land in whatever happens to have focus. |
 | `tools/capture-panels.sh` | Screenshots the real panel in every state, by window id (desktop size, or `320 1.3 -mobile` for phones). |
+| `tools/record-countdown.sh` + `tools/window-frames.swift` | Records the real panel's countdown turning into the banner, one window via ScreenCaptureKit, as a looping animated WebP. |
 | `PLAYBOOK.md` | The rules for the agent. |
 
 ## Install
